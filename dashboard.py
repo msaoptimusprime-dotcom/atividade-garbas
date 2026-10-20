@@ -8,17 +8,17 @@ import streamlit as st
 
 st.set_page_config(
     page_title="Dashboard de Saúde - UBS",
-    page_icon="🏥",
     layout="wide"
 )
 
-st.title("🏥 Dashboard de Unidades Básicas de Saúde")
+st.title("Dashboard de Unidades Básicas de Saúde")
 st.write(
-    "Dashboard de análise das Unidades Básicas de Saúde (UBS), "
-    "desenvolvido com Python, Pandas, Plotly e Streamlit."
+    "Análise das Unidades Básicas de Saúde (UBS) "
+    "utilizando Python, Pandas, Plotly e Streamlit."
 )
 
-# Nomes dos estados brasileiros
+
+# Dicionário com os nomes dos estados brasileiros
 nomes_estados = {
     "AC": "Acre",
     "AL": "Alagoas",
@@ -51,27 +51,39 @@ nomes_estados = {
 
 
 def ler_csv(conteudo):
-    """Lê um arquivo CSV e tenta identificar o separador."""
-    for separador in [",", ";", "\t"]:
-        for codificacao in ["utf-8", "latin-1"]:
-            try:
-                dados = pd.read_csv(
-                    io.BytesIO(conteudo),
-                    sep=separador,
-                    encoding=codificacao
-                )
+    """Lê um CSV tentando identificar o separador e a codificação."""
+    ultimo_erro = None
 
-                if len(dados.columns) > 1:
-                    return dados
+    for codificacao in ["utf-8-sig", "latin-1"]:
+        try:
+            dados = pd.read_csv(
+                io.BytesIO(conteudo),
+                sep=None,
+                engine="python",
+                encoding=codificacao,
+                dtype=str
+            )
 
-            except Exception:
-                continue
+            dados.columns = (
+                dados.columns
+                .str.strip()
+                .str.replace("\ufeff", "", regex=False)
+                .str.upper()
+            )
 
-    raise ValueError("Não foi possível ler o arquivo CSV.")
+            if len(dados.columns) > 1:
+                return dados
+
+        except Exception as erro:
+            ultimo_erro = erro
+
+    raise ValueError(
+        f"Não foi possível interpretar o CSV. Detalhes: {ultimo_erro}"
+    )
 
 
 def carregar_dados(arquivo):
-    """Carrega dados de um arquivo CSV ou ZIP."""
+    """Carrega dados de um CSV ou de um ZIP que contenha um CSV."""
     conteudo = arquivo.getvalue()
 
     if arquivo.name.lower().endswith(".zip"):
@@ -79,16 +91,21 @@ def carregar_dados(arquivo):
             arquivos_csv = [
                 nome for nome in pasta.namelist()
                 if nome.lower().endswith(".csv")
+                and not nome.startswith("__MACOSX/")
             ]
 
             if not arquivos_csv:
-                raise ValueError("O ZIP não contém arquivos CSV.")
+                raise ValueError(
+                    "Não foi encontrado nenhum arquivo CSV dentro do ZIP."
+                )
 
+            # Utiliza o primeiro CSV encontrado
             return ler_csv(pasta.read(arquivos_csv[0]))
 
     return ler_csv(conteudo)
 
 
+# Envio do arquivo
 st.sidebar.header("Configurações")
 
 arquivo = st.sidebar.file_uploader(
@@ -100,14 +117,17 @@ if arquivo is None:
     st.info("Envie o arquivo CSV ou ZIP para começar a análise.")
     st.stop()
 
+
+# Leitura do arquivo
 try:
     df = carregar_dados(arquivo)
+
 except Exception as erro:
     st.error(f"Erro ao carregar o arquivo: {erro}")
     st.stop()
 
 
-# Tratamento inicial dos dados
+# Limpeza básica dos dados
 df.columns = df.columns.str.strip().str.upper()
 
 for coluna in df.select_dtypes(include="object").columns:
@@ -115,19 +135,39 @@ for coluna in df.select_dtypes(include="object").columns:
 
 df = df.drop_duplicates()
 
-# Verificação das colunas necessárias
+# Verifica as colunas necessárias
 if "UF" not in df.columns or "NOME" not in df.columns:
-    st.error("O arquivo precisa conter as colunas UF e NOME.")
-    st.write("Colunas encontradas:", list(df.columns))
+    st.error(
+        "As colunas UF e NOME não foram encontradas. "
+        "Confira a estrutura do arquivo enviado."
+    )
+    st.write("Colunas encontradas:", df.columns.tolist())
     st.stop()
 
-# Padronização das siglas dos estados
+
+# Padroniza a coluna de estado
 df["UF"] = df["UF"].astype("string").str.strip().str.upper()
 
-# Criação da coluna com os nomes dos estados
+# Converte códigos numéricos de UF para siglas, caso necessário
+codigos_uf = {
+    "11": "RO", "12": "AC", "13": "AM", "14": "RR",
+    "15": "PA", "16": "AP", "17": "TO", "21": "MA",
+    "22": "PI", "23": "CE", "24": "RN", "25": "PB",
+    "26": "PE", "27": "AL", "28": "SE", "29": "BA",
+    "31": "MG", "32": "ES", "33": "RJ", "35": "SP",
+    "41": "PR", "42": "SC", "43": "RS", "50": "MS",
+    "51": "MT", "52": "GO", "53": "DF"
+}
+
+df["UF"] = df["UF"].replace(codigos_uf)
+
+# Cria a coluna com o nome completo do estado
 df["ESTADO"] = df["UF"].map(nomes_estados)
 
-# Remoção das colunas que não serão utilizadas
+# Remove linhas sem informação de estado
+df = df.dropna(subset=["ESTADO"])
+
+# Remove colunas que não serão utilizadas
 colunas_remover = [
     "LATITUDE",
     "LONGITUDE",
@@ -141,7 +181,8 @@ df = df.drop(
     ]
 )
 
-# Filtro por nome do estado
+
+# Filtros
 st.sidebar.subheader("Filtros")
 
 estados_disponiveis = sorted(
@@ -159,87 +200,110 @@ dados_filtrados = df[
 ].copy()
 
 
-# Indicadores gerais
+# Indicadores
 total_ubs = len(dados_filtrados)
 total_estados = dados_filtrados["ESTADO"].nunique()
 
+st.subheader("Indicadores gerais")
+
 col1, col2 = st.columns(2)
 
-col1.metric("Total de UBS", f"{total_ubs:,}".replace(",", "."))
-col2.metric("Estados selecionados", total_estados)
+col1.metric(
+    "Total de UBS",
+    f"{total_ubs:,}".replace(",", ".")
+)
+
+col2.metric(
+    "Estados selecionados",
+    total_estados
+)
 
 st.divider()
 
 
-# Gráfico 1: UBS por estado
+# Gráfico 1: quantidade de UBS por estado
 st.subheader("1. Quantidade de UBS por estado")
 
 ubs_por_estado = (
-    dados_filtrados["ESTADO"]
-    .value_counts()
-    .reset_index()
+    dados_filtrados.groupby("ESTADO")
+    .size()
+    .reset_index(name="Quantidade")
+    .sort_values("Quantidade", ascending=False)
 )
 
-ubs_por_estado.columns = ["Estado", "Quantidade"]
+if not ubs_por_estado.empty:
+    fig_estados = px.bar(
+        ubs_por_estado,
+        x="ESTADO",
+        y="Quantidade",
+        title="Distribuição das UBS por estado",
+        labels={
+            "ESTADO": "Estado",
+            "Quantidade": "Número de UBS"
+        },
+        color="Quantidade",
+        color_continuous_scale="Blues"
+    )
 
-ubs_por_estado = ubs_por_estado.sort_values(
-    "Quantidade",
-    ascending=False
-)
+    fig_estados.update_layout(
+        xaxis_title="Estado",
+        yaxis_title="Quantidade de UBS",
+        xaxis_tickangle=-45
+    )
 
-fig_estados = px.bar(
-    ubs_por_estado,
-    x="Estado",
-    y="Quantidade",
-    title="Distribuição das UBS por estado",
-    labels={
-        "Estado": "Estado",
-        "Quantidade": "Número de UBS"
-    },
-    color="Quantidade",
-    color_continuous_scale="Blues"
-)
+    st.plotly_chart(
+        fig_estados,
+        use_container_width=True
+    )
 
-fig_estados.update_layout(
-    xaxis_title="Estado",
-    yaxis_title="Quantidade de UBS"
-)
-
-st.plotly_chart(fig_estados, use_container_width=True)
-
-st.write(
-    "O gráfico compara a quantidade de UBS cadastradas em cada estado. "
-    "Esses números representam os registros encontrados na base de dados "
-    "e não indicam, isoladamente, a qualidade do atendimento."
-)
-
-
-# Gráfico 2: distribuição das UBS
-st.subheader("2. Participação de cada estado")
-
-fig_pizza = px.pie(
-    ubs_por_estado,
-    names="Estado",
-    values="Quantidade",
-    title="Proporção de UBS por estado",
-    hole=0.4
-)
-
-st.plotly_chart(fig_pizza, use_container_width=True)
-
-st.write(
-    "O gráfico mostra a participação de cada estado no total de UBS "
-    "presentes nos dados filtrados."
-)
+    st.write(
+        "Este gráfico permite comparar a quantidade de UBS "
+        "registradas em cada estado. Uma quantidade maior de "
+        "unidades não significa, por si só, que o atendimento "
+        "à população seja melhor."
+    )
+else:
+    st.warning("Não há dados para os estados selecionados.")
 
 
-# Tabela de dados
-st.subheader("3. Dados das UBS")
+# Gráfico 2: participação de cada estado
+st.subheader("2. Proporção de UBS por estado")
 
-# Oculta as siglas e apresenta os nomes dos estados
+if not ubs_por_estado.empty:
+    fig_pizza = px.pie(
+        ubs_por_estado,
+        names="ESTADO",
+        values="Quantidade",
+        title="Participação dos estados no total de UBS",
+        hole=0.4
+    )
+
+    st.plotly_chart(
+        fig_pizza,
+        use_container_width=True
+    )
+
+    st.write(
+        "Este gráfico apresenta a proporção de UBS de cada "
+        "estado em relação ao total de unidades dos estados "
+        "selecionados."
+    )
+else:
+    st.warning("Não há dados para gerar o gráfico.")
+
+
+# Tabela dos dados tratados
+st.subheader("3. Tabela de dados das UBS")
+
+# Exibe o nome completo do estado e oculta as colunas removidas
 colunas_exibicao = [
     coluna for coluna in dados_filtrados.columns
-    if coluna not in ["UF", "LATITUDE", "LONGITUDE", "LOGRADOURO"]
+    if coluna not in [
+        "UF",
+        "LATITUDE",
+        "LONGITUDE",
+        "LOGRADOURO"
+    ]
 ]
 
 st.dataframe(
@@ -257,15 +321,17 @@ csv_tratado = dados_filtrados[colunas_exibicao].to_csv(
 )
 
 st.download_button(
-    label="📥 Baixar dados tratados",
+    label="Baixar dados tratados",
     data=csv_tratado,
     file_name="ubs_dados_tratados.csv",
     mime="text/csv"
 )
 
+
+# Informações finais
 st.divider()
 
 st.caption(
-    "Projeto escolar de Ciência de Dados | "
-    "Python, Pandas, Plotly e Streamlit."
+    "Projeto escolar de Ciência de Dados. "
+    "Ferramentas utilizadas: Python, Pandas, Plotly e Streamlit."
 )
