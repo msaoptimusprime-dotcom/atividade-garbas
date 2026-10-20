@@ -50,9 +50,11 @@ nomes_estados = {
 }
 
 
-def ler_csv(conteudo):
-    """Lê um CSV tentando identificar o separador e a codificação."""
-    ultimo_erro = None
+    def arquivo_fixo = "Unidades_Basicas_Saude-UBS_csv"
+ 
+try:
+  df = pd.read_csv(arquivo_fixo)
+  df = df.drop_duplicates()
 
     for codificacao in ["utf-8-sig", "latin-1"]:
         try:
