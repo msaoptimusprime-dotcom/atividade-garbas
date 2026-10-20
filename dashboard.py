@@ -5,264 +5,297 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+
 st.set_page_config(
-    page_title="Dashboard de Saúde — UBS",
-    page_icon="",
-    layout="wide",
+    page_title="Dashboard de Saúde - UBS",
+    layout="wide"
 )
 
-UF_NOMES = {
-    11: "Rondônia", 12: "Acre", 13: "Amazonas", 14: "Roraima",
-    15: "Pará", 16: "Amapá", 17: "Tocantins", 21: "Maranhão",
-    22: "Piauí", 23: "Ceará", 24: "Rio Grande do Norte", 25: "Paraíba",
-    26: "Pernambuco", 27: "Alagoas", 28: "Sergipe", 29: "Bahia",
-    31: "Minas Gerais", 32: "Espírito Santo", 33: "Rio de Janeiro",
-    35: "São Paulo", 41: "Paraná", 42: "Santa Catarina",
-    43: "Rio Grande do Sul", 50: "Mato Grosso do Sul",
-    51: "Mato Grosso", 52: "Goiás", 53: "Distrito Federal",
-}
-
-
-def ler_arquivo(upload):
-    """Lê CSV ou ZIP contendo um CSV, tentando codificações comuns."""
-    conteudo = upload.getvalue()
-    nome = upload.name.lower()
-
-    if nome.endswith(".zip"):
-        with zipfile.ZipFile(io.BytesIO(conteudo)) as arquivo_zip:
-            csvs = [n for n in arquivo_zip.namelist()
-                    if n.lower().endswith(".csv") and not n.startswith("__MACOSX/")]
-            if not csvs:
-                raise ValueError("O ZIP não contém nenhum arquivo CSV.")
-            conteudo = arquivo_zip.read(csvs[0])
-
-    erros = []
-    for encoding in ("utf-8", "latin-1"):
-        try:
-            return pd.read_csv(io.BytesIO(conteudo), sep=None, engine="python",
-                               encoding=encoding)
-        except Exception as erro:
-            erros.append(str(erro))
-    raise ValueError("Não foi possível ler o arquivo. Confira se ele é um CSV válido.")
-
-
-def preparar_dados(dados):
-    """Padroniza nomes de colunas e trata campos usados no dashboard."""
-    dados = dados.copy()
-    dados.columns = [str(col).strip().upper() for col in dados.columns]
-
-    obrigatorias = {"CNES", "UF", "IBGE", "NOME", "BAIRRO", "LATITUDE", "LONGITUDE"}
-    ausentes = obrigatorias - set(dados.columns)
-    if ausentes:
-        raise ValueError(
-            "Não encontrei estas colunas esperadas: "
-            + ", ".join(sorted(ausentes))
-            + ". Colunas recebidas: "
-            + ", ".join(dados.columns)
-        )
-
-    # Converte códigos para números; valores inválidos viram ausentes (NaN).
-    for coluna in ("CNES", "UF", "IBGE"):
-        dados[coluna] = pd.to_numeric(dados[coluna], errors="coerce").astype("Int64")
-
-    # A base pode conter coordenadas com vírgula como separador decimal.
-    for coluna in ("LATITUDE", "LONGITUDE"):
-        dados[coluna] = pd.to_numeric(
-            dados[coluna].astype("string").str.strip().str.replace(",", ".", regex=False),
-            errors="coerce",
-        )
-
-    # Limpa espaços e mantém explícitos os textos que estavam vazios.
-    for coluna in ("NOME", "BAIRRO", "LOGRADOURO"):
-        dados[coluna] = (
-            dados[coluna].astype("string").str.strip()
-            .replace("", pd.NA)
-        )
-
-    # Remove duplicatas exatas; o total removido será informado na tela.
-    quantidade_antes = len(dados)
-    dados = dados.drop_duplicates()
-    duplicatas_removidas = quantidade_antes - len(dados)
-
-    dados["ESTADO"] = dados["UF"].map(
-        lambda codigo: UF_NOMES.get(int(codigo), f"Código {codigo}")
-        if pd.notna(codigo) else "UF não informada"
-    )
-    dados["COORDENADAS_OK"] = (
-        dados["LATITUDE"].between(-34, 6, inclusive="both")
-        & dados["LONGITUDE"].between(-74, -34, inclusive="both")
-    )
-
-    return dados, duplicatas_removidas
-
-
-st.title("Dashboard das Unidades Básicas de Saúde")
+st.title("Dashboard de UBS")
 st.write(
-    "Este dashboard explora os registros de Unidades Básicas de Saúde (UBS) "
-    "presentes no arquivo enviado. Os filtros e gráficos ajudam a comparar "
-    "a distribuição dos registros e a qualidade das informações de localização."
+    "Este projeto apresenta uma análise dos dados das Unidades "
+    "Básicas de Saúde (UBS) utilizando Pandas, Plotly e Streamlit."
 )
 
-st.info(
-    "A base fornecida possui códigos de estado e município, nome e endereço da UBS "
-    "e coordenadas geográficas. Ela não contém população nem ano de referência; "
-    "portanto, os resultados não medem cobertura por habitante nem evolução histórica."
+st.sidebar.header("Configurações")
+arquivo = st.sidebar.file_uploader(
+    "Envie o arquivo de dados",
+    type=["csv", "zip"]
 )
 
-upload = st.file_uploader(
-    "Envie o arquivo da base de UBS (CSV ou ZIP contendo CSV)",
-    type=["csv", "zip"],
-)
 
-if upload is None:
-    st.markdown("### Perguntas investigadas")
-    st.markdown(
-        "1. **Quais estados têm mais UBS registradas nesta base?**\n"
-        "2. **Quais estados têm maior proporção de registros com coordenadas válidas?**"
-    )
-    st.caption("Envie o arquivo para gerar os indicadores e gráficos.")
-else:
-    try:
-        bruto = ler_arquivo(upload)
-        df, duplicatas_removidas = preparar_dados(bruto)
-
-        st.success("Arquivo carregado e dados preparados com Pandas.")
-        with st.expander("O que foi feito no tratamento dos dados?"):
-            st.markdown(
-                "- Padronização dos nomes das colunas.\n"
-                "- Conversão de códigos e coordenadas para tipos numéricos.\n"
-                "- Conversão de vírgulas decimais em coordenadas para pontos.\n"
-                "- Remoção de espaços extras em campos de texto.\n"
-                "- Remoção apenas de linhas completamente duplicadas.\n"
-                "- Identificação de coordenadas dentro de uma faixa geográfica aproximada do Brasil."
+def ler_csv(conteudo):
+    """Lê um CSV tentando identificar a separação das colunas."""
+    for separador in [",", ";", "\t"]:
+        try:
+            dados = pd.read_csv(
+                io.BytesIO(conteudo),
+                sep=separador,
+                encoding="utf-8"
             )
-            st.write(f"Linhas duplicadas exatas removidas: **{duplicatas_removidas:,}**".replace(",", "."))
 
-        st.subheader("Indicadores gerais")
-        total = len(df)
-        total_estados = df.loc[df["UF"].notna(), "UF"].nunique()
-        coordenadas_validas = int(df["COORDENADAS_OK"].sum())
-        percentual_coord = (coordenadas_validas / total * 100) if total else 0
-        nomes_ausentes = int(df["NOME"].isna().sum())
+            if len(dados.columns) > 1:
+                return dados
+        except UnicodeDecodeError:
+            break
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Registros de UBS", f"{total:,}".replace(",", "."))
-        c2.metric("UFs encontradas", str(total_estados))
-        c3.metric("Coordenadas válidas", f"{percentual_coord:.1f}%")
-        c4.metric("Nomes ausentes", f"{nomes_ausentes:,}".replace(",", "."))
+    for separador in [",", ";", "\t"]:
+        try:
+            dados = pd.read_csv(
+                io.BytesIO(conteudo),
+                sep=separador,
+                encoding="latin-1"
+            )
 
-        st.subheader("Filtros")
-        estados = sorted(df["ESTADO"].dropna().unique().tolist())
-        estados_selecionados = st.multiselect(
-            "Selecione os estados",
-            options=estados,
-            default=estados,
+            if len(dados.columns) > 1:
+                return dados
+        except Exception:
+            continue
+
+    raise ValueError("Não foi possível ler o arquivo CSV.")
+
+
+def carregar_dados(arquivo):
+    """Carrega os dados de um arquivo CSV ou ZIP."""
+    conteudo = arquivo.getvalue()
+
+    if arquivo.name.lower().endswith(".zip"):
+        with zipfile.ZipFile(io.BytesIO(conteudo)) as pasta:
+            arquivos_csv = [
+                nome for nome in pasta.namelist()
+                if nome.lower().endswith(".csv")
+            ]
+
+            if not arquivos_csv:
+                raise ValueError("O ZIP não contém arquivos CSV.")
+
+            return ler_csv(pasta.read(arquivos_csv[0]))
+
+    return ler_csv(conteudo)
+
+
+if arquivo is None:
+    st.info("Envie o arquivo CSV ou ZIP para visualizar a análise.")
+    st.stop()
+
+
+try:
+    df = carregar_dados(arquivo)
+except Exception as erro:
+    st.error(f"Erro ao carregar os dados: {erro}")
+    st.stop()
+
+
+# Limpeza básica dos dados
+df.columns = df.columns.str.strip().str.upper()
+
+for coluna in df.select_dtypes(include="object").columns:
+    df[coluna] = df[coluna].str.strip()
+
+df = df.drop_duplicates()
+
+# Verifica se as colunas principais existem
+colunas_obrigatorias = ["UF", "NOME"]
+
+for coluna in colunas_obrigatorias:
+    if coluna not in df.columns:
+        st.error(f"A coluna obrigatória '{coluna}' não foi encontrada.")
+        st.write("Colunas disponíveis:", list(df.columns))
+        st.stop()
+
+# Padroniza os estados
+df["UF"] = df["UF"].astype("string").str.strip().str.upper()
+
+# Converte coordenadas para números, quando disponíveis
+for coluna in ["LATITUDE", "LONGITUDE"]:
+    if coluna in df.columns:
+        df[coluna] = pd.to_numeric(
+            df[coluna].astype(str).str.replace(",", ".", regex=False),
+            errors="coerce"
         )
-        filtrado = df[df["ESTADO"].isin(estados_selecionados)].copy()
 
-        if filtrado.empty:
-            st.warning("Nenhum registro corresponde aos filtros selecionados.")
-        else:
-            # Gráfico 1: quantidade de registros por estado.
-            st.subheader("Gráfico 1 — UBS registradas por estado")
-            por_estado = (
-                filtrado.groupby("ESTADO", as_index=False)
-                .size()
-                .rename(columns={"size": "Quantidade de UBS"})
-                .sort_values("Quantidade de UBS", ascending=False)
-            )
-            fig1 = px.bar(
-                por_estado,
-                x="ESTADO",
-                y="Quantidade de UBS",
-                title="Quantidade de registros de UBS por estado",
-                labels={"ESTADO": "Estado", "Quantidade de UBS": "Registros"},
-                hover_data={"Quantidade de UBS": True},
-            )
-            fig1.update_layout(xaxis_tickangle=-40)
-            st.plotly_chart(fig1, use_container_width=True)
-            st.write(
-                "**Interpretação:** o gráfico mostra quantas unidades estão registradas "
-                "na base em cada estado selecionado. Um total maior de registros não "
-                "significa necessariamente melhor atendimento ou maior cobertura populacional."
-            )
+# Filtros
+st.sidebar.subheader("Filtros")
 
-            # Gráfico 2: percentual de registros com coordenadas válidas.
-            st.subheader("Gráfico 2 — Qualidade das coordenadas por estado")
-            coord_estado = (
-                filtrado.groupby("ESTADO", as_index=False)
-                .agg(
-                    Total=("COORDENADAS_OK", "size"),
-                    Com_coordenadas_validas=("COORDENADAS_OK", "sum"),
-                )
-            )
-            coord_estado["Percentual com coordenadas válidas (%)"] = (
-                coord_estado["Com_coordenadas_validas"] / coord_estado["Total"] * 100
-            ).round(1)
-            coord_estado = coord_estado.sort_values(
-                "Percentual com coordenadas válidas (%)", ascending=False
-            )
-            fig2 = px.bar(
-                coord_estado,
-                x="ESTADO",
-                y="Percentual com coordenadas válidas (%)",
-                title="Percentual de UBS com latitude e longitude plausíveis",
-                labels={
-                    "ESTADO": "Estado",
-                    "Percentual com coordenadas válidas (%)": "Registros com coordenadas válidas (%)",
-                },
-                hover_data=["Total", "Com_coordenadas_validas"],
-            )
-            fig2.update_layout(xaxis_tickangle=-40, yaxis_range=[0, 100])
-            st.plotly_chart(fig2, use_container_width=True)
-            st.write(
-                "**Interpretação:** este gráfico compara a proporção de registros cujas "
-                "coordenadas estão preenchidas e dentro de uma faixa geográfica aproximada "
-                "do Brasil. Ele avalia a completude plausível da localização, não a qualidade do serviço."
-            )
+estados = sorted(df["UF"].dropna().unique().tolist())
 
-            # Mapa de pontos: limitado para manter a aplicação responsiva.
-            pontos = filtrado.loc[
-                filtrado["COORDENADAS_OK"], ["NOME", "ESTADO", "BAIRRO", "LATITUDE", "LONGITUDE"]
-            ].dropna(subset=["LATITUDE", "LONGITUDE"])
-            if not pontos.empty:
-                st.subheader("Mapa — Localização das UBS")
-                limite = 5000
-                if len(pontos) > limite:
-                    st.caption(f"Para manter o mapa rápido, são exibidos até {limite:,} pontos amostrados.".replace(",", "."))
-                    pontos = pontos.sample(n=limite, random_state=42)
-                mapa = px.scatter_map(
-                    pontos,
-                    lat="LATITUDE",
-                    lon="LONGITUDE",
-                    color="ESTADO",
-                    hover_name="NOME",
-                    hover_data={"BAIRRO": True, "LATITUDE": False, "LONGITUDE": False},
-                    zoom=3,
-                    height=520,
-                    title="Distribuição geográfica das UBS com coordenadas válidas",
-                )
-                mapa.update_layout(map_style="open-street-map", margin={"r": 0, "t": 50, "l": 0, "b": 0})
-                st.plotly_chart(mapa, use_container_width=True)
+estados_selecionados = st.sidebar.multiselect(
+    "Selecione o estado",
+    options=estados,
+    default=estados
+)
 
-            with st.expander("Ver amostra dos dados tratados"):
-                st.dataframe(filtrado.head(100), use_container_width=True)
+dados_filtrados = df[df["UF"].isin(estados_selecionados)].copy()
 
-            with st.expander("Ver valores ausentes por coluna"):
-                ausentes = pd.DataFrame({
-                    "Coluna": filtrado.columns,
-                    "Valores ausentes": [int(filtrado[col].isna().sum()) for col in filtrado.columns],
-                })
-                st.dataframe(ausentes, hide_index=True, use_container_width=True)
+# Indicadores
+total_ubs = len(dados_filtrados)
+total_estados = dados_filtrados["UF"].nunique()
 
-            csv_saida = filtrado.drop(columns=["COORDENADAS_OK"], errors="ignore").to_csv(index=False).encode("utf-8-sig")
-            st.download_button(
-                "Baixar dados filtrados em CSV",
-                data=csv_saida,
-                file_name="ubs_tratadas_filtradas.csv",
-                mime="text/csv",
-            )
+if "LATITUDE" in dados_filtrados.columns and \
+        "LONGITUDE" in dados_filtrados.columns:
 
-    except Exception as erro:
-        st.error(f"Não foi possível processar o arquivo: {erro}")
-        st.caption("Confira se o arquivo contém as colunas CNES, UF, IBGE, NOME, BAIRRO, LATITUDE e LONGITUDE.")
+    coordenadas_validas = dados_filtrados[
+        dados_filtrados["LATITUDE"].notna()
+        & dados_filtrados["LONGITUDE"].notna()
+    ]
+
+    total_coordenadas = len(coordenadas_validas)
+
+else:
+    coordenadas_validas = pd.DataFrame()
+    total_coordenadas = 0
+
+st.subheader("Indicadores gerais")
+
+col1, col2, col3 = st.columns(3)
+
+col1.metric("Total de UBS", f"{total_ubs:,}".replace(",", "."))
+col2.metric("Estados encontrados", total_estados)
+col3.metric(
+    "UBS com coordenadas",
+    f"{total_coordenadas:,}".replace(",", ".")
+)
+
+st.divider()
+
+# Gráfico 1: quantidade de UBS por estado
+st.subheader("1. Quantidade de UBS por estado")
+
+ubs_por_estado = (
+    dados_filtrados["UF"]
+    .value_counts()
+    .reset_index()
+)
+
+ubs_por_estado.columns = ["Estado", "Quantidade"]
+
+fig_estados = px.bar(
+    ubs_por_estado.sort_values("Quantidade", ascending=False),
+    x="Estado",
+    y="Quantidade",
+    title="Distribuição das UBS por estado",
+    labels={
+        "Estado": "Estado (UF)",
+        "Quantidade": "Número de UBS"
+    },
+    color="Quantidade",
+    color_continuous_scale="Blues"
+)
+
+fig_estados.update_layout(
+    xaxis_title="Estado",
+    yaxis_title="Quantidade de UBS",
+    showlegend=False
+)
+
+st.plotly_chart(fig_estados, use_container_width=True)
+
+st.write(
+    "Este gráfico permite comparar a quantidade de unidades cadastradas "
+    "em cada estado. Uma quantidade maior não significa, necessariamente, "
+    "que o atendimento à população seja melhor."
+)
+
+# Gráfico 2: UBS com e sem coordenadas
+st.subheader("2. Qualidade dos dados de localização")
+
+if "LATITUDE" in dados_filtrados.columns and \
+        "LONGITUDE" in dados_filtrados.columns:
+
+    total_sem_coordenadas = total_ubs - total_coordenadas
+
+    dados_localizacao = pd.DataFrame({
+        "Situação": ["Com coordenadas", "Sem coordenadas"],
+        "Quantidade": [total_coordenadas, total_sem_coordenadas]
+    })
+
+    fig_localizacao = px.pie(
+        dados_localizacao,
+        names="Situação",
+        values="Quantidade",
+        title="UBS com e sem informações de localização",
+        hole=0.4
+    )
+
+    st.plotly_chart(fig_localizacao, use_container_width=True)
+
+    st.write(
+        "Este gráfico mostra quantas unidades possuem latitude e longitude "
+        "registradas. Dados ausentes podem dificultar a localização das UBS "
+        "em mapas."
+    )
+
+else:
+    st.warning(
+        "Não foi possível criar o gráfico de localização porque "
+        "as colunas LATITUDE e LONGITUDE não foram encontradas."
+    )
+
+# Mapa das UBS
+st.subheader("3. Localização das UBS")
+
+if not coordenadas_validas.empty:
+    mapa = coordenadas_validas.dropna(
+        subset=["LATITUDE", "LONGITUDE"]
+    ).copy()
+
+    mapa = mapa[
+        mapa["LATITUDE"].between(-90, 90)
+        & mapa["LONGITUDE"].between(-180, 180)
+    ]
+
+    if not mapa.empty:
+        fig_mapa = px.scatter_map(
+            mapa,
+            lat="LATITUDE",
+            lon="LONGITUDE",
+            hover_name="NOME",
+            hover_data=[
+                coluna for coluna in ["UF", "BAIRRO"]
+                if coluna in mapa.columns
+            ],
+            zoom=3,
+            height=500,
+            title="Mapa das Unidades Básicas de Saúde"
+        )
+
+        st.plotly_chart(fig_mapa, use_container_width=True)
+    else:
+        st.warning("Não há coordenadas válidas para exibir no mapa.")
+else:
+    st.info("O mapa precisa de latitude e longitude válidas.")
+
+# Tabela de dados
+st.subheader("4. Tabela de dados")
+
+st.write(
+    "A tabela abaixo apresenta os registros após a remoção de duplicatas "
+    "e a aplicação dos filtros."
+)
+
+st.dataframe(
+    dados_filtrados,
+    use_container_width=True,
+    hide_index=True
+)
+
+# Download dos dados tratados
+csv_tratado = dados_filtrados.to_csv(
+    index=False,
+    sep=";",
+    encoding="utf-8-sig"
+)
+
+st.download_button(
+    label="Baixar dados tratados",
+    data=csv_tratado,
+    file_name="ubs_dados_tratados.csv",
+    mime="text/csv"
+)
+
+st.divider()
+
+st.caption(
+    "Projeto escolar de Ciência de Dados | "
+    "Ferramentas: Python, Pandas, Plotly e Streamlit."
+)
