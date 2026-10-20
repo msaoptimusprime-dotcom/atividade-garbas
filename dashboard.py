@@ -50,11 +50,68 @@ nomes_estados = {
 }
 
 
-    def arquivo_fixo = "Unidades_Basicas_Saude-UBS_csv"
- 
+ARQUIVO_FIXO = "Unidades_Basicas_Saude-UBS_csv.zip"
+
+
+def ler_csv(conteudo):
+    """Lê um CSV identificando automaticamente o separador."""
+    ultimo_erro = None
+
+    for codificacao in ["utf-8-sig", "latin-1"]:
+        try:
+            dados = pd.read_csv(
+                io.BytesIO(conteudo),
+                sep=None,
+                engine="python",
+                encoding=codificacao,
+                dtype=str
+            )
+
+            dados.columns = (
+                dados.columns
+                .str.strip()
+                .str.replace("\ufeff", "", regex=False)
+                .str.upper()
+            )
+
+            if len(dados.columns) > 1:
+                return dados
+
+        except Exception as erro:
+            ultimo_erro = erro
+
+    raise ValueError(
+        f"Não foi possível interpretar o CSV: {ultimo_erro}"
+    )
+
+
+def carregar_dados(caminho):
+    with zipfile.ZipFile(caminho) as pasta:
+        arquivos_csv = [
+            nome for nome in pasta.namelist()
+            if nome.lower().endswith(".csv")
+            and not nome.startswith("__MACOSX/")
+        ]
+
+        if not arquivos_csv:
+            raise ValueError("O arquivo ZIP não contém nenhum CSV.")
+
+        return ler_csv(pasta.read(arquivos_csv[0]))
+
+
 try:
-  df = pd.read_csv(arquivo_fixo)
-  df = df.drop_duplicates()
+    df = carregar_dados(ARQUIVO_FIXO)
+
+except FileNotFoundError:
+    st.error(
+        "O arquivo ZIP não foi encontrado. "
+        "Adicione-o ao repositório do GitHub, na mesma pasta do dashboard.py."
+    )
+    st.stop()
+
+except Exception as erro:
+    st.error(f"Erro ao carregar os dados: {erro}")
+    st.stop()
 
     for codificacao in ["utf-8-sig", "latin-1"]:
         try:
