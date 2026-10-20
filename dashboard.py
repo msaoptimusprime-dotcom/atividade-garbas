@@ -1,11 +1,13 @@
 import io
 import zipfile
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
 
+# Configuração da página
 st.set_page_config(
     page_title="Dashboard de Saúde - UBS",
     layout="wide"
@@ -18,7 +20,14 @@ st.write(
 )
 
 
-# Dicionário com os nomes dos estados brasileiros
+# Arquivo de dados salvo junto ao dashboard.py
+ARQUIVO_FIXO = (
+    Path(__file__).parent
+    / "Unidades_Basicas_Saude-UBS_csv.zip"
+)
+
+
+# Dicionário de siglas e nomes dos estados
 nomes_estados = {
     "AC": "Acre",
     "AL": "Alagoas",
@@ -49,12 +58,47 @@ nomes_estados = {
     "TO": "Tocantins"
 }
 
+# Códigos numéricos utilizados para identificar os estados
+codigos_uf = {
+    "11": "RO",
+    "12": "AC",
+    "13": "AM",
+    "14": "RR",
+    "15": "PA",
+    "16": "AP",
+    "17": "TO",
+    "21": "MA",
+    "22": "PI",
+    "23": "CE",
+    "24": "RN",
+    "25": "PB",
+    "26": "PE",
+    "27": "AL",
+    "28": "SE",
+    "29": "BA",
+    "31": "MG",
+    "32": "ES",
+    "33": "RJ",
+    "35": "SP",
+    "41": "PR",
+    "42": "SC",
+    "43": "RS",
+    "50": "MS",
+    "51": "MT",
+    "52": "GO",
+    "53": "DF"
+}
 
-ARQUIVO_FIXO = "Unidades_Basicas_Saude-UBS_csv.zip"
+# Permite reconhecer também nomes completos dos estados
+estados_por_nome = {
+    nome.casefold(): sigla
+    for sigla, nome in nomes_estados.items()
+}
 
 
 def ler_csv(conteudo):
-    """Lê um CSV identificando automaticamente o separador."""
+    """Lê o CSV tentando identificar o separador e a codificação."""
+
     ultimo_erro = None
 
     for codificacao in ["utf-8-sig", "latin-1"]:
@@ -81,112 +125,47 @@ def ler_csv(conteudo):
             ultimo_erro = erro
 
     raise ValueError(
-        f"Não foi possível interpretar o CSV: {ultimo_erro}"
+        f"Não foi possível ler o CSV: {ultimo_erro}"
     )
 
 
 def carregar_dados(caminho):
-    with zipfile.ZipFile(caminho) as pasta:
+    """Carrega o primeiro arquivo CSV encontrado dentro do ZIP."""
+
+    with zipfile.ZipFile(caminho, "r") as pasta:
         arquivos_csv = [
-            nome for nome in pasta.namelist()
+            nome
+            for nome in pasta.namelist()
             if nome.lower().endswith(".csv")
             and not nome.startswith("__MACOSX/")
         ]
 
         if not arquivos_csv:
-            raise ValueError("O arquivo ZIP não contém nenhum CSV.")
+            raise ValueError(
+                "Não foi encontrado nenhum arquivo CSV dentro do ZIP."
+            )
 
         return ler_csv(pasta.read(arquivos_csv[0]))
 
 
+# Carregamento automático do arquivo
 try:
-    df = carregar_dados(ARQUIVO_FIXO)
+    if not ARQUIVO_FIXO.exists():
+        st.error(
+            "O arquivo de dados não foi encontrado. "
+            "Adicione Unidades_Basicas_Saude-UBS_csv.zip "
+            "à mesma pasta do dashboard.py no GitHub."
+        )
+        st.stop()
 
-except FileNotFoundError:
-    st.error(
-        "O arquivo ZIP não foi encontrado. "
-        "Adicione-o ao repositório do GitHub, na mesma pasta do dashboard.py."
-    )
-    st.stop()
+    df = carregar_dados(ARQUIVO_FIXO)
 
 except Exception as erro:
     st.error(f"Erro ao carregar os dados: {erro}")
     st.stop()
 
-    for codificacao in ["utf-8-sig", "latin-1"]:
-        try:
-            dados = pd.read_csv(
-                io.BytesIO(conteudo),
-                sep=None,
-                engine="python",
-                encoding=codificacao,
-                dtype=str
-            )
 
-            dados.columns = (
-                dados.columns
-                .str.strip()
-                .str.replace("\ufeff", "", regex=False)
-                .str.upper()
-            )
-
-            if len(dados.columns) > 1:
-                return dados
-
-        except Exception as erro:
-            ultimo_erro = erro
-
-    raise ValueError(
-        f"Não foi possível interpretar o CSV. Detalhes: {ultimo_erro}"
-    )
-
-
-def carregar_dados(arquivo):
-    """Carrega dados de um CSV ou de um ZIP que contenha um CSV."""
-    conteudo = arquivo.getvalue()
-
-    if arquivo.name.lower().endswith(".zip"):
-        with zipfile.ZipFile(io.BytesIO(conteudo)) as pasta:
-            arquivos_csv = [
-                nome for nome in pasta.namelist()
-                if nome.lower().endswith(".csv")
-                and not nome.startswith("__MACOSX/")
-            ]
-
-            if not arquivos_csv:
-                raise ValueError(
-                    "Não foi encontrado nenhum arquivo CSV dentro do ZIP."
-                )
-
-            # Utiliza o primeiro CSV encontrado
-            return ler_csv(pasta.read(arquivos_csv[0]))
-
-    return ler_csv(conteudo)
-
-
-# Envio do arquivo
-st.sidebar.header("Configurações")
-
-arquivo = st.sidebar.file_uploader(
-    "Envie o arquivo de dados",
-    type=["csv", "zip"]
-)
-
-if arquivo is None:
-    st.info("Envie o arquivo CSV ou ZIP para começar a análise.")
-    st.stop()
-
-
-# Leitura do arquivo
-try:
-    df = carregar_dados(arquivo)
-
-except Exception as erro:
-    st.error(f"Erro ao carregar o arquivo: {erro}")
-    st.stop()
-
-
-# Limpeza básica dos dados
+# Tratamento básico dos dados
 df.columns = df.columns.str.strip().str.upper()
 
 for coluna in df.select_dtypes(include="object").columns:
@@ -195,38 +174,79 @@ for coluna in df.select_dtypes(include="object").columns:
 df = df.drop_duplicates()
 
 # Verifica as colunas necessárias
-if "UF" not in df.columns or "NOME" not in df.columns:
+colunas_obrigatorias = ["UF", "NOME"]
+colunas_ausentes = [
+    coluna
+    for coluna in colunas_obrigatorias
+    if coluna not in df.columns
+]
+
+if colunas_ausentes:
     st.error(
-        "As colunas UF e NOME não foram encontradas. "
-        "Confira a estrutura do arquivo enviado."
+        "O arquivo não contém todas as colunas necessárias: "
+        + ", ".join(colunas_ausentes)
     )
     st.write("Colunas encontradas:", df.columns.tolist())
     st.stop()
 
 
-# Padroniza a coluna de estado
-df["UF"] = df["UF"].astype("string").str.strip().str.upper()
+# Padronização dos estados
+def identificar_estado(valor):
+    """Converte siglas, códigos ou nomes em nomes completos."""
 
-# Converte códigos numéricos de UF para siglas, caso necessário
-codigos_uf = {
-    "11": "RO", "12": "AC", "13": "AM", "14": "RR",
-    "15": "PA", "16": "AP", "17": "TO", "21": "MA",
-    "22": "PI", "23": "CE", "24": "RN", "25": "PB",
-    "26": "PE", "27": "AL", "28": "SE", "29": "BA",
-    "31": "MG", "32": "ES", "33": "RJ", "35": "SP",
-    "41": "PR", "42": "SC", "43": "RS", "50": "MS",
-    "51": "MT", "52": "GO", "53": "DF"
-}
+    if pd.isna(valor):
+        return None
 
-df["UF"] = df["UF"].replace(codigos_uf)
+    valor = str(valor).strip()
 
-# Cria a coluna com o nome completo do estado
-df["ESTADO"] = df["UF"].map(nomes_estados)
+    if not valor:
+        return None
 
-# Remove linhas sem informação de estado
-df = df.dropna(subset=["ESTADO"])
+    # Verifica códigos numéricos, como 35 para São Paulo
+    codigo = valor.replace(".0", "")
 
-# Remove colunas que não serão utilizadas
+    if codigo in codigos_uf:
+        sigla = codigos_uf[codigo]
+        return nomes_estados[sigla]
+
+    # Verifica siglas, como SP
+    sigla = valor.upper()
+
+    if sigla in nomes_estados:
+        return nomes_estados[sigla]
+
+    # Verifica nomes completos, como São Paulo
+    nome_normalizado = valor.casefold()
+
+    if nome_normalizado in estados_por_nome:
+        sigla = estados_por_nome[nome_normalizado]
+        return nomes_estados[sigla]
+
+    return None
+
+
+df["ESTADO"] = df["UF"].apply(identificar_estado)
+
+# Informa se existem registros sem estado reconhecido
+estados_invalidos = df["ESTADO"].isna().sum()
+
+if estados_invalidos > 0:
+    st.warning(
+        f"{estados_invalidos} registros não possuem um estado "
+        "reconhecido e não serão incluídos nos gráficos."
+    )
+
+df = df.dropna(subset=["ESTADO"]).copy()
+
+if df.empty:
+    st.error(
+        "Nenhum estado foi reconhecido na coluna UF. "
+        "Verifique os dados do arquivo."
+    )
+    st.stop()
+
+
+# Remoção das colunas que não serão utilizadas
 colunas_remover = [
     "LATITUDE",
     "LONGITUDE",
@@ -235,17 +255,18 @@ colunas_remover = [
 
 df = df.drop(
     columns=[
-        coluna for coluna in colunas_remover
+        coluna
+        for coluna in colunas_remover
         if coluna in df.columns
     ]
 )
 
 
 # Filtros
-st.sidebar.subheader("Filtros")
+st.sidebar.header("Filtros")
 
 estados_disponiveis = sorted(
-    df["ESTADO"].dropna().unique().tolist()
+    df["ESTADO"].unique().tolist()
 )
 
 estados_selecionados = st.sidebar.multiselect(
@@ -259,16 +280,16 @@ dados_filtrados = df[
 ].copy()
 
 
-# Indicadores
+# Indicadores gerais
+st.subheader("Indicadores gerais")
+
 total_ubs = len(dados_filtrados)
 total_estados = dados_filtrados["ESTADO"].nunique()
-
-st.subheader("Indicadores gerais")
 
 col1, col2 = st.columns(2)
 
 col1.metric(
-    "Total de UBS",
+    "Total de UBS cadastradas",
     f"{total_ubs:,}".replace(",", ".")
 )
 
@@ -291,6 +312,7 @@ ubs_por_estado = (
 )
 
 if not ubs_por_estado.empty:
+
     fig_estados = px.bar(
         ubs_por_estado,
         x="ESTADO",
@@ -316,24 +338,25 @@ if not ubs_por_estado.empty:
     )
 
     st.write(
-        "Este gráfico permite comparar a quantidade de UBS "
-        "registradas em cada estado. Uma quantidade maior de "
-        "unidades não significa, por si só, que o atendimento "
-        "à população seja melhor."
+        "O gráfico compara a quantidade de unidades cadastradas "
+        "em cada estado. Uma quantidade maior de UBS não significa, "
+        "necessariamente, que o atendimento à população seja melhor."
     )
+
 else:
     st.warning("Não há dados para os estados selecionados.")
 
 
-# Gráfico 2: participação de cada estado
+# Gráfico 2: proporção de UBS por estado
 st.subheader("2. Proporção de UBS por estado")
 
 if not ubs_por_estado.empty:
+
     fig_pizza = px.pie(
         ubs_por_estado,
         names="ESTADO",
         values="Quantidade",
-        title="Participação dos estados no total de UBS",
+        title="Participação de cada estado no total de UBS",
         hole=0.4
     )
 
@@ -343,20 +366,20 @@ if not ubs_por_estado.empty:
     )
 
     st.write(
-        "Este gráfico apresenta a proporção de UBS de cada "
-        "estado em relação ao total de unidades dos estados "
-        "selecionados."
+        "O gráfico mostra a proporção de unidades cadastradas "
+        "em cada estado em relação ao total dos estados selecionados."
     )
+
 else:
     st.warning("Não há dados para gerar o gráfico.")
 
 
-# Tabela dos dados tratados
+# Tabela de dados tratados
 st.subheader("3. Tabela de dados das UBS")
 
-# Exibe o nome completo do estado e oculta as colunas removidas
 colunas_exibicao = [
-    coluna for coluna in dados_filtrados.columns
+    coluna
+    for coluna in dados_filtrados.columns
     if coluna not in [
         "UF",
         "LATITUDE",
